@@ -139,6 +139,26 @@ const JSON &ClvtObject::operator[](const string &key) const {
     return iter == m_value.end() ? statics_null() : iter->second;
 }
 
+#define in_range(c, s, e) (s <= c && c <= e)
+#define IS_DIGIT(c) in_range(c, '0', '9')
+#define IS_INTEGER(c) in_range(c, '1', '9')
+
+/**
+ * from json11
+ * format char c suitable for printing an error message
+ */
+
+static inline string format_char(char c) {
+    char buf[12];
+    if (static_cast<uint8_t>(c) >= 0x20 && static_cast<uint8_t>(c) <= 0x7f)
+        snprintf(buf, sizeof buf, "(%c), %d", c, c);
+    else
+        snprintf(buf, sizeof buf, "(%d)", c);
+    return string(buf);
+}
+#define is_hex(ch) \
+    (in_range(ch, '0', '9') || in_range(ch, 'A', 'F') || in_range(ch, 'a', 'f'))
+
 struct ClvtParser final {
     const string &src;
     size_t i;
@@ -151,10 +171,160 @@ struct ClvtParser final {
         if (iter == expect.end()) return res;
         return JSON();
     }
+    long encode_hex4() {
+        assert(src[i] == 'u');
+        if (src.length() - i < 4) {
+            err = "no enough hex charactor for encode.";
+            return -1;
+        }
+        i++;
+        for (unsigned a = 0; a < 4; a++) {
+            if (!is_hex(src[i + a])) {
+                err = "invalid hex charactor " + format_char(src[i + a]) + ".";
+                return -1;
+            }
+        }
+        return strtol(src.substr(i, 4).data(), nullptr, 16);
+    }
+    /**
+     * from json11
+     */
+    void encode_utf8(long cp, string &out) {
+        if (cp < 0) return;
+
+        if (cp < 0x80) {
+            out += static_cast<char>(cp);
+        } else if (cp < 0x800) {
+            out += static_cast<char>((cp >> 6) | 0xC0);
+            out += static_cast<char>((cp & 0x3F) | 0x80);
+        } else if (cp < 0x10000) {
+            out += static_cast<char>((cp >> 12) | 0xE0);
+            out += static_cast<char>(((cp >> 6) & 0x3F) | 0x80);
+            out += static_cast<char>((cp & 0x3F) | 0x80);
+        } else {
+            out += static_cast<char>((cp >> 18) | 0xF0);
+            out += static_cast<char>(((cp >> 12) & 0x3F) | 0x80);
+            out += static_cast<char>(((cp >> 6) & 0x3F) | 0x80);
+            out += static_cast<char>((cp & 0x3F) | 0x80);
+        }
+    }
+
     JSON parse_object() { return JSON(); }
+
     JSON parse_array() { return JSON(); }
-    JSON parse_string() { return JSON(); }
-    JSON parse_number() { return JSON(); }
+
+    JSON parse_string() {
+        assert(src[i] == '"');
+        i++;
+        string res = "";
+        while (true) {
+            if (i == src.size()) {
+                err = "unexpected end of input string.";
+                return JSON();
+            }
+            char ch = src[i++];
+            if (ch == '"') {
+                return res;
+            } else if (ch == '\\') {
+                switch (src[i]) {
+                    case '"':
+                    case '\\':
+                    case '/':
+                        res += src[i++];
+                        break;
+                    case 'b':
+                        i++;
+                        res += '\b';
+                        break;
+                    case 'f':
+                        i++;
+                        res += '\f';
+                        break;
+                    case 'n':
+                        i++;
+                        res += '\n';
+                        break;
+                    case 'r':
+                        i++;
+                        res += '\r';
+                        break;
+                    case 't':
+                        i++;
+                        res += '\t';
+                        break;
+                    case 'u':
+                        long cp = encode_hex4();
+                        if (cp < 0) {
+                            return JSON();
+                        }
+                        i += 4;
+                        if (cp >= 0xD800 && cp <= 0xDBFF) {
+                            if (src[i] != '\\' || src[i + 1] != 'u') {
+                                err = "expect a surrogate pair but not get.";
+                                return JSON();
+                            }
+                            i++;
+                            long cp2 = encode_hex4();
+                            if (cp2 < 0xDC00 || cp2 > 0xDFFF) {
+                                err = "invalid surrogate pair with " +
+                                      std::to_string(cp) + " and " +
+                                      std::to_string(cp2);
+                                return JSON();
+                            }
+                            cp = (((cp - 0xD800) << 10) | (cp2 - 0xDC00)) +
+                                 0x10000;
+                        }
+                        encode_utf8(cp, res);
+                        break;
+                }
+            } else {
+                res += ch;
+            }
+        }
+    }
+
+    JSON parse_number() {
+        // start position
+        size_t sp = i;
+        // prefix +/-
+        if (src[i] == '-' || src[i] == '+') i++;
+        // integer part
+        if (src[i] == '0') {
+            i++;
+            if (IS_DIGIT(src[i])) {
+                err = "leading 0(s) not permitted in numbers.";
+                return JSON();
+            }
+        } else if (IS_INTEGER(src[i])) {
+            i++;
+            while (IS_DIGIT(src[i])) i++;
+        } else {
+            err = "invalid charactor " + format_char(src[i]) + " in numbers.";
+            return JSON();
+        }
+        // fraction part
+        if (src[i] == '.') {
+            i++;
+            if (!IS_DIGIT(src[i])) {
+                err = "at least a decimal required in fractional part.";
+                return JSON();
+            }
+            while (IS_DIGIT(src[i])) i++;
+        }
+
+        // exponent part
+        if (src[i] == 'e' || src[i] == 'E') {
+            i++;
+            if (src[i] == '-' || src[i] == '+') i++;
+            if (!IS_DIGIT(src[i])) {
+                err = "at least a decimal required in exponential part.";
+                return JSON();
+            }
+            while (IS_DIGIT(src[i])) i++;
+        }
+        return strtod(src.c_str() + sp, nullptr);
+    }
+
     JSON parse_json() {
         skip_whitespace();
         while (i != src.size()) {
