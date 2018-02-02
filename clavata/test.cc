@@ -15,6 +15,7 @@ static size_t pcnt = 0;
         if (equality)                                        \
             pcnt++;                                          \
         else {                                               \
+            cout << err << endl;                             \
             printf("expected " format ", but actual " format \
                    ", at line %d.\n",                        \
                    expect, actual, __LINE__);                \
@@ -123,10 +124,56 @@ void test_string() {
                 "\"\\ud834\\udd1e\""); /* G clef sign U+1D11E */
 }
 
+// test parse array
+#define TEST_ARRAY(json)                 \
+    do {                                 \
+        res = JSON::parse(json, err);    \
+        CLVT_EQ_TYPE(JSON::kARRAY, res); \
+    } while (0)
+
+void test_array() {
+    string err;
+    JSON res;
+    TEST_ARRAY("[ ]");
+    CLVT_EQ_INT(0, (int)res.array_items().size());
+    TEST_ARRAY("[ null , false , true , 123 , \"abc\" ]");
+    CLVT_EQ_TYPE(JSON::kNULL, res[0]);
+    CLVT_EQ_TYPE(JSON::kBOOL, res[1]);
+    CLVT_EQ_TYPE(JSON::kBOOL, res[2]);
+    CLVT_EQ_TYPE(JSON::kNUMBER, res[3]);
+    CLVT_EQ_DOUBLE(123.0, res[3].number_value());
+    CLVT_EQ_TYPE(JSON::kSTRING, res[4]);
+    CLVT_EQ_STRING("abc", res[4].string_value());
+}
+
+#define TEST_OBJECT(json)                 \
+    do {                                  \
+        res = JSON::parse(json, err);     \
+        CLVT_EQ_TYPE(JSON::kOBJECT, res); \
+    } while (0)
+
+void test_object() {
+    string err;
+    JSON res;
+    TEST_OBJECT("{ }");
+    TEST_OBJECT(
+        " { "
+        "\"n\" : null , "
+        "\"f\" : false , "
+        "\"t\" : true , "
+        "\"i\" : 123 , "
+        "\"s\" : \"abc\", "
+        "\"a\" : [ 1, 2, 3 ],"
+        "\"o\" : { \"1\" : 1, \"2\" : 2, \"3\" : 3 }"
+        " } ");
+}
+
 void test() {
     test_literal();
     test_number();
     test_string();
+    test_array();
+    test_object();
 }
 int main() {
     test();

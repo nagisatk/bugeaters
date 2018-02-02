@@ -162,25 +162,30 @@ static inline string format_char(char c) {
 struct ClvtParser final {
     const string &src;
     size_t i;
-    bool fail;
+    bool failed;
     string &err;
+    void fail(string msg) {
+        failed = true;
+        err = msg;
+    }
     JSON parse_literal(const string &expect, JSON res) {
         auto iter = expect.begin();
         while (iter != expect.end())
             if (*(iter++) != src[i++]) break;
         if (iter == expect.end()) return res;
+        fail("syntax error in parsing `" + expect + "`.");
         return JSON();
     }
     long encode_hex4() {
         assert(src[i] == 'u');
         if (src.length() - i < 4) {
-            err = "no enough hex charactor for encode.";
+            fail("no enough hex charactor for encode.");
             return -1;
         }
         i++;
         for (unsigned a = 0; a < 4; a++) {
             if (!is_hex(src[i + a])) {
-                err = "invalid hex charactor " + format_char(src[i + a]) + ".";
+                fail("invalid hex charactor " + format_char(src[i + a]) + ".");
                 return -1;
             }
         }
@@ -209,9 +214,79 @@ struct ClvtParser final {
         }
     }
 
-    JSON parse_object() { return JSON(); }
+    JSON parse_object() {
+        assert(src[i] == '{');
+        i++;
+        map<string, JSON> o;
+        while (true) {
+            skip_whitespace();
+            if (src[i] == '}') {
+                i++;
+                return o;
+            }
+            if (src[i] != '"') {
+                fail("expect a string as key in JSON object.");
+                return JSON();
+            }
+            JSON k = parse_string();
+            if (failed) return JSON();
+            skip_whitespace();
+            if (src[i] != ':') {
+                fail(
+                    "expect a `:` to separate key and value in JSON object, "
+                    "but got a " +
+                    format_char(src[i]) + ".");
+                return JSON();
+            }
+            i++;
+            skip_whitespace();
+            JSON v = parse_json();
+            if (failed) return JSON();
+            o.insert({std::move(k.string_value()), v});
+            skip_whitespace();
+            if (src[i] != ',') {
+                if (src[i] != '}') {
+                    fail("expect a comma in object, but got a " +
+                         format_char(src[i]) + ".");
+                    return JSON();
+                }
+                i++;
+                return o;
+            }
+            // ignore trailing comma
+            i++;
+        }
+        assert(0);
+        return JSON();
+    }
 
-    JSON parse_array() { return JSON(); }
+    JSON parse_array() {
+        assert(src[i] == '[');
+        i++;
+        vector<JSON> vec;
+        while (true) {
+            skip_whitespace();
+            if (src[i] == ']') {
+                i++;
+                return vec;
+            }
+            JSON j = parse_json();
+            vec.push_back(j);
+            skip_whitespace();
+            if (src[i] == ',')
+                i++;
+            else {
+                if (src[i] != ']') {
+                    fail("need a comma.");
+                    return JSON();
+                }
+                i++;
+                return vec;
+            }
+        }
+        assert(0);
+        return JSON();
+    }
 
     JSON parse_string() {
         assert(src[i] == '"');
@@ -219,7 +294,7 @@ struct ClvtParser final {
         string res = "";
         while (true) {
             if (i == src.size()) {
-                err = "unexpected end of input string.";
+                fail("unexpected end of input string.");
                 return JSON();
             }
             char ch = src[i++];
@@ -260,15 +335,15 @@ struct ClvtParser final {
                         i += 4;
                         if (cp >= 0xD800 && cp <= 0xDBFF) {
                             if (src[i] != '\\' || src[i + 1] != 'u') {
-                                err = "expect a surrogate pair but not get.";
+                                fail("expect a surrogate pair but not get.");
                                 return JSON();
                             }
                             i++;
                             long cp2 = encode_hex4();
                             if (cp2 < 0xDC00 || cp2 > 0xDFFF) {
-                                err = "invalid surrogate pair with " +
-                                      std::to_string(cp) + " and " +
-                                      std::to_string(cp2);
+                                fail("invalid surrogate pair with " +
+                                     std::to_string(cp) + " and " +
+                                     std::to_string(cp2));
                                 return JSON();
                             }
                             cp = (((cp - 0xD800) << 10) | (cp2 - 0xDC00)) +
@@ -292,21 +367,21 @@ struct ClvtParser final {
         if (src[i] == '0') {
             i++;
             if (IS_DIGIT(src[i])) {
-                err = "leading 0(s) not permitted in numbers.";
+                fail("leading 0(s) not permitted in numbers.");
                 return JSON();
             }
         } else if (IS_INTEGER(src[i])) {
             i++;
             while (IS_DIGIT(src[i])) i++;
         } else {
-            err = "invalid charactor " + format_char(src[i]) + " in numbers.";
+            fail("invalid charactor " + format_char(src[i]) + " in numbers.");
             return JSON();
         }
         // fraction part
         if (src[i] == '.') {
             i++;
             if (!IS_DIGIT(src[i])) {
-                err = "at least a decimal required in fractional part.";
+                fail("at least a decimal required in fractional part.");
                 return JSON();
             }
             while (IS_DIGIT(src[i])) i++;
@@ -317,7 +392,7 @@ struct ClvtParser final {
             i++;
             if (src[i] == '-' || src[i] == '+') i++;
             if (!IS_DIGIT(src[i])) {
-                err = "at least a decimal required in exponential part.";
+                fail("at least a decimal required in exponential part.");
                 return JSON();
             }
             while (IS_DIGIT(src[i])) i++;
@@ -340,6 +415,7 @@ struct ClvtParser final {
                 case '[':
                     return parse_array();
                 case '{':
+                    // std::cout << src << std::endl;
                     return parse_object();
                 default:
                     return parse_number();
@@ -358,9 +434,8 @@ struct ClvtParser final {
 JSON JSON::parse(const string &in, string &err) {
     ClvtParser cp{in, 0, false, err};
     JSON res = cp.parse_json();
-
     cp.skip_whitespace();
-    if (cp.fail) return JSON();
+    if (cp.failed) return JSON();
     if (cp.i != in.size()) return JSON();
     return res;
 }
